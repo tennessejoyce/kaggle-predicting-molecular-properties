@@ -1,0 +1,95 @@
+# This Python 3 environment comes with many helpful analytics libraries installed
+# It is defined by the kaggle/python docker image: https://github.com/kaggle/docker-python
+# For example, here's several helpful packages to load in 
+
+import numpy as np # linear algebra
+import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
+
+from sklearn.preprocessing import StandardScaler
+from xgboost import XGBRegressor
+
+from hyperopt import hp, tpe
+from hyperopt.fmin import fmin
+from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.metrics import mean_absolute_error,make_scorer
+from sklearn.neighbors import kneighbors_graph
+
+
+# Input data files are available in the "../input/" directory.
+# For example, running this (by clicking run or pressing Shift+Enter) will list the files in the input directory
+
+import os
+print(os.listdir("../input"))
+
+# Any results you write to the current directory are saved as output.
+
+#Get the nearest neighbors data for every atom.
+print('Loading structure data...')
+structures = pd.read_csv('../input/champs-scalar-coupling/structures.csv')
+print('Calculating nearest neighbors graph...')
+neighborData = []
+for i,(name,group) in enumerate(structures.groupby('molecule_name')):
+    graph = kneighbors_graph(group[['x','y','z']].values,
+                    n_neighbors=2,mode='distance')
+    temp = pd.DataFrame(np.reshape(graph.data,[-1,2]),columns=['distance_1','distance_2'],index=group.index)
+    temp['species_0'] = group['atom'].values
+    temp['species_1'] = group['atom'].values[graph.indices[::2]]
+    temp['species_2'] = group['atom'].values[graph.indices[1::2]]
+    distance12 = np.linalg.norm(group[['x','y','z']].values[graph.indices[::2]] - group[['x','y','z']].values[graph.indices[1::2]],axis=1)
+    temp['cosine'] = 0.5*(distance12**2 - temp['distance_1'].values**2 - temp['distance_2'].values**2)/(temp['distance_1'].values*temp['distance_2'].values)
+    neighborData.append(temp)
+    if i%1000==0:
+        print(f'{i}/130775')
+        print(temp)
+    
+allData = pd.concat(neighborData)
+
+#Add in mulliken charges
+print("Loading mulliken charges...")
+mulliken_charges = pd.read_csv('../input/champs-scalar-coupling/mulliken_charges.csv')
+allData['mulliken_charge'] = structures.merge(mulliken_charges,on=['molecule_name','atom_index'],how='left')['mulliken_charge']
+
+#Add in scalar magnetic shieldings
+print("Loading magnetic shielding...")
+shielding_tensors = pd.read_csv('../input/champs-scalar-coupling/magnetic_shielding_tensors.csv')
+temp = structures.merge(shielding_tensors,on=['molecule_name','atom_index'],how='left')
+allData['scalar_shielding'] = temp['XX']+temp['YY']+temp['ZZ']
+
+model = XGBRegressor(max_depth=6,n_estimators=200,learning_rate = 0.3, gamma = 0.5, alpha = 0.5)
+mull = []
+shield = []
+for name,group in allData.groupby(['species_0','species_1','species_2']):
+    group = group.drop(['species_0','species_1','species_2'],axis=1)
+    train = group.dropna()
+    trainY_mull = train.pop('mulliken_charge').values
+    trainY_shield = train.pop('scalar_shielding').values
+    print(name)
+    print(f'Samples: {train.shape[0]}')
+    
+    if train.shape[0]==0:
+        temp = np.zeros(group.shape[0])
+        mull.append(pd.Series(temp,index=group.index))
+        shield.append(pd.Series(temp,index=group.index))
+        continue
+        
+    #Fit Mulliken charges
+    model.fit(train.values,trainY_mull)
+    error = model.predict(train.values) - trainY_mull
+    print(f'Mulliken error: {np.sqrt(np.mean(error**2))}/ {np.std(trainY_mull)}')
+    print(f'Mulliken mean: {np.mean(trainY_mull)}')
+    temp = model.predict(group.drop(['mulliken_charge','scalar_shielding'],axis=1).values)
+    mull.append(pd.Series(temp,index=group.index))
+    
+    #Fit magnetic shielding
+    model.fit(train.values,trainY_shield)
+    error = model.predict(train.values) - trainY_shield
+    print(f'Shield error: {np.sqrt(np.mean(error**2))} / {np.std(trainY_shield)}')
+    print(f'Shield mean: {np.mean(trainY_shield)}')
+    temp = model.predict(group.drop(['mulliken_charge','scalar_shielding'],axis=1).values)
+    shield.append(pd.Series(temp,index=group.index))
+    
+mull_pred = pd.concat(mull)
+shield_pred = pd.concat(shield)
+
+mull_pred.to_csv('mulliken_charges_est.csv')
+shield_pred.to_csv('shielding_scalar_est.csv')
