@@ -7,31 +7,35 @@ from sklearn.metrics import mean_absolute_error,make_scorer  #Metric to evaluate
 
 
 
-#Vectorized kNN search. For each vector in targets, finds the k nearestvectors in struc.
-def kNN(targets, struc, k):
-    bsq = np.sum(struc**2,axis=1)
-    objective = -2*np.matmul(targets,np.transpose(struc)) + bsq
+#Vectorized kNN search. For each vector in a, finds the k nearest vectors in b.
+def kNN(a, b, k):
+    #Magnitudes of vectors in b
+    b_squared = np.sum(b**2,axis=1)
+    #Squared Euclidean distance without the the a_squared term
+    objective = -2*np.matmul(a,np.transpose(b)) + b_squared
+    #Use a partial sort to find the indices in b of the k smallest elements for each a.
     return np.argpartition(objective,kth=k-1,axis=1)[:,:k]
 
 #Finds the k nearest atoms to the center of mass of a given two atoms.
 #Vectorized so that it handles all pairs in a given molecule simultaneously.
 def findNearest(atom_ids_0,atom_ids_1,struc,k):
-    #Halfway points between pairs of atoms.
+    #Corner case if there are not enough atoms in the molecule.
     if struc.shape[0]<k+2:
         slack = k + 2 - struc.shape[0]
         k = struc.shape[0] -2
     else:
         slack = 0
+    #Midpoints between each pair of atoms.
     targets = (struc[atom_ids_0]+ struc[atom_ids_1])/2
-    #Find k+2 nearest neighbors to each halfway point
+    #Find k+2 nearest neighbors to each midpoint
     #(which will probably include the original atom pair itself)
-    near3 = kNN(targets,struc,k=k+2)
-    #Remove the atom pair from the list, if it's there.
-    #If it's not, just take the first k atoms.
+    nearest = kNN(targets,struc,k=k+2)
     out = []
-    for i in range(near3.shape[0]):
-        temp = near3[i]
+    for i in range(nearest.shape[0]):
+        temp = nearest[i]
+        #First k elements which are not the original 2 atoms.
         temp = temp[(temp!=atom_ids_0[i])*(temp!=atom_ids_1[i])][:k]
+        #If there were not enough atoms in the molecules, fill the rest with -1.
         if slack>0:
             temp = np.concatenate((temp,np.zeros(slack)-1))
         out.append(temp)
