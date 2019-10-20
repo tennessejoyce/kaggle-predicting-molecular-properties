@@ -1,30 +1,13 @@
-# This Python 3 environment comes with many helpful analytics libraries installed
-# It is defined by the kaggle/python docker image: https://github.com/kaggle/docker-python
-# For example, here's several helpful packages to load in 
-
-import numpy as np # linear algebra
-import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
-
-from sklearn.preprocessing import StandardScaler
-from xgboost import XGBRegressor
-
-from hyperopt import hp, tpe
-from hyperopt.fmin import fmin
-from sklearn.model_selection import cross_val_score, StratifiedKFold
-from sklearn.metrics import mean_absolute_error,make_scorer
-from sklearn.model_selection import train_test_split
+import numpy as np 
+import pandas as pd 
+from xgboost import XGBRegressor  #Gradient boosting library
+from sklearn.preprocessing import StandardScaler   #To normalize data
+from sklearn.model_selection import train_test_split,cross_val_score, StratifiedKFold  #Convenience functions for cross validation
+from sklearn.metrics import mean_absolute_error,make_scorer  #Metric to evaluate the model by.
 
 
-# Input data files are available in the "../input/" directory.
-# For example, running this (by clicking run or pressing Shift+Enter) will list the files in the input directory
 
-import os
-print(os.listdir("../input"))
-
-# Any results you write to the current directory are saved as output.
-
-#Vectorized kNN search. For each vector in targets, finds the k nearest
-#vectors in struc.
+#Vectorized kNN search. For each vector in targets, finds the k nearestvectors in struc.
 def kNN(targets, struc, k):
     bsq = np.sum(struc**2,axis=1)
     objective = -2*np.matmul(targets,np.transpose(struc)) + bsq
@@ -56,7 +39,7 @@ def findNearest(atom_ids_0,atom_ids_1,struc,k):
     
     
 def calculateDist(i,j,data,structures):
-    #Merge structure data into train.
+    #Merge coordinates of atoms i and j into the main dataframe.
     temp = data.merge(structures,left_on=['molecule_name',f'atom_index_{i}'],
             right_on=['molecule_name','atom_index'],how='left')
     temp = temp.merge(structures,left_on=['molecule_name',f'atom_index_{j}'],
@@ -70,24 +53,6 @@ def calculateDist(i,j,data,structures):
     #Sort the data by id
     temp = temp.sort_values('id')
     return np.reshape(temp['distance'].values,[-1])
-
-def calculatemulliken(i,data,mulliken_charges):
-    temp = data.merge(mulliken_charges,left_on=['molecule_name',f'atom_index_{i}'],
-            right_on=['molecule_name','atom_index'],how='left')
-    temp = temp.sort_values('id')
-    temp = temp['mulliken_charge']
-    temp = temp.fillna(0)
-    return np.reshape(temp.values,[-1])
-
-def calculateScalarShielding(i,data,shielding_tensors):
-    temp = data.merge(shielding_tensors,left_on=['molecule_name',f'atom_index_{i}'],
-            right_on=['molecule_name','atom_index'],how='left')
-    temp['scalar_shielding'] = (temp['XX'] + temp['YY'] + temp['ZZ'])/3.0
-    temp = temp.sort_values('id')
-    temp = temp['scalar_shielding']
-    temp = temp.fillna(0)
-    return np.reshape(temp.values,[-1])
-
 
 def processFeatures(infile,printOut=False,additionalData=True):
     #Read in training data
@@ -137,22 +102,20 @@ def processFeatures(infile,printOut=False,additionalData=True):
     
     
     if additionalData:
-        #Add in mulliken charges to the structure DataFrame
+        #Add in mulliken charges (predicted by an auxilliary model)
         print("Loading mulliken charges...")
         mulliken_charges = pd.read_csv('../input/estimatemullikenv1/mulliken_charges_est.csv',
                 header=None,index_col=0,names=['mulliken_charge'])
-        print(type(mulliken_charges))
         structures['mulliken_charge'] = mulliken_charges['mulliken_charge']
         for i in range(k+2):
                 data[f'mulliken_charge_{i}'] = data.merge(structures,
                     left_on=['molecule_name',f'atom_index_{i}'],
                     right_on=['molecule_name','atom_index'],how='left')['mulliken_charge']
         
-        #Add in scalar magnetic shieldings
+        #Add in scalar magnetic shieldings (predicted by an auxilliary model)
         print("Loading magnetic shielding...")
         scalar_shielding = pd.read_csv('../input/estimatemullikenv1/shielding_scalar_est.csv',
                 header=None,index_col=0,names=['scalar_shielding'])
-        print(type(mulliken_charges))
         structures['scalar_shielding'] = scalar_shielding['scalar_shielding']
         for i in range(k+2):
                 data[f'scalar_shielding_{i}'] = data.merge(structures,
@@ -190,60 +153,12 @@ contributions = pd.read_csv('../input/champs-scalar-coupling/scalar_coupling_con
 contributions['target'] = featuresTrain.pop('scalar_coupling_constant')
 contributions['difference'] = contributions['target'] - contributions['fc']
 
-#Pseudo-Huber loss function to approximate mean absolute error.
-delta = 1.0
-def huber_approx_obj(y_true,y_pred):
-    residual = y_true - y_pred
-    radical = np.sqrt(1 + (residual / delta) ** 2)
-    grad = -residual / radical
-    hess = 1.0 / (radical**3)
-    return grad, hess
-
 
 #For each category in the 'type' column, fit a model to that data.
 allTypes = featuresTrain['type'].unique()
 print('Unique types:')
 print(allTypes)
 
-
-# fineTune=False
-# if fineTune:
-#     t = allTypes[0]
-#     ids = featuresTrain['type']==t
-#     trainX = featuresTrain[ids].iloc[:,1:]
-#     trainY = trainX.pop('scalar_coupling_constant').values
-#     trainX = trainX.values
-    
-#     #Define a objective function as a cross-validation score
-#     #as a function of hyperparameters.
-#     def objective(params):
-#         params = {
-#             'n_estimators': int(params['n_estimators']),
-#             'max_depth': int(params['max_depth']),
-#             'gamma': params['gamma'] 
-#         }
-#             # 'gamma': "{:.3f}".format(params['gamma']),
-#             # 'colsample_bytree': '{:.3f}'.format(params['colsample_bytree']),
-        
-#         clf = XGBRegressor(learning_rate = 0.3, colsample_bytree = 0.8, **params)
-        
-#         scorer = make_scorer(mean_absolute_error,greater_is_better=True)
-#         score = cross_val_score(clf, trainX, trainY, scoring=scorer, cv=3).mean()
-#         print("Mean Absolute Error {:.3f} params {}".format(score, params))
-#         return score
-    
-#     #Define the search space for hyperparameters.
-#     space = {
-#         'max_depth': hp.quniform('max_depth', 2, 12, 1),
-#         'n_estimators': hp.quniform('n_estimators', 100, 1000,1),
-#         'gamma': hp.uniform('gamma', 0, 0.5)
-#     }
-    
-#     best = fmin(fn=objective,
-#                 space=space,
-#                 algo=tpe.suggest,
-#                 max_evals=10)
-#     print(best)
 
 fitModel=True
 if fitModel:
