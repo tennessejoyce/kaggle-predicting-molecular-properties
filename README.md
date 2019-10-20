@@ -52,17 +52,32 @@ These indices are added to the training dataframe as atom_id_2 through atom_id_(
 I use pandas merge function on these columns to compute the pairwise (inverse) distance matrix
 among those k+2 atoms.
 
+```
+def calculateDist(i,j,data,structures):
+    #Merge coordinates of atoms i and j into the main dataframe.
+    temp = data.merge(structures,left_on=['molecule_name',f'atom_index_{i}'],
+            right_on=['molecule_name','atom_index'],how='left')
+    temp = temp.merge(structures,left_on=['molecule_name',f'atom_index_{j}'],
+                    right_on=['molecule_name','atom_index'],suffixes=('0','1'), how='left')
+    #Calculate the reciprocal distances
+    temp['distance'] = (temp['x0']-temp['x1'])**2 +  \
+                    (temp['y0']-temp['y1'])**2 + (temp['z0']-temp['z1'])**2
+    temp['distance'] = 1/np.sqrt(temp['distance'])
+    #Fill missing values with 0
+    temp = temp.fillna(0)
+    #Sort the data by id
+    temp = temp.sort_values('id')
+    return np.reshape(temp['distance'].values,[-1])
+```
 
-
-These distances are the most important features in the final model.
+These distances are the most important features in the final model (the Mulliken charges and magnetic shielding only give a slight improvement).
 
 
 # XGBoost model
-
-
+I use an XGBoost model with the following hyperparameters (which were optimized with the hyperopt library using Bayesian optimization).
+Note the target is separated into the dominant Fermi contact term (FC) and the remaining terms (Diff). Separate models are trained on each of these two subtargets, and then added together in the end.
 ```
         #Fit a model to the training data
-        
         params = {
             'max_depth' : 12,
             'n_estimators': 1500,
@@ -73,12 +88,16 @@ These distances are the most important features in the final model.
         }
         
         print('Training FC model...')
-        modelFC = XGBRegressor(**params)    #(objective=huber_approx_obj)
+        modelFC = XGBRegressor(**params)
         modelFC.fit(trainX,trainYFC_scaled)
         print('Training Diff model...')
         modelDiff = XGBRegressor(**params)
         modelDiff.fit(trainX,trainYDiff_scaled)
 ```
+This code snippet is also contained in a for loop over the eight different classes of couplings (1JHC, 3JHH, etc).
+So a total of 16 XGBoost models are trained (two for each class). This takes about 1.5 hours running on Kaggle's servers
+with GPU support (and significantly longer without a GPU).
+
 
 # Results
 Leaderboard score (-1.00221 private, -1.00359 public). Rank 1361/2749.
