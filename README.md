@@ -48,8 +48,13 @@ def kNN(a, b, k):
     #Use a partial sort to find the indices in b of the k smallest elements for each a.
     return np.argpartition(objective,kth=k-1,axis=1)[:,:k]
 ```
-These indices are added to the training dataframe, and used to compute the final features (pairwise
-distance matrix, mulliken charges, scalar magnetic shielding).
+These indices are added to the training dataframe as atom_id_2 through atom_id_(k+1).
+I use pandas merge function on these columns to compute the pairwise (inverse) distance matrix
+among those k+2 atoms.
+
+
+
+These distances are the most important features in the final model.
 
 
 # XGBoost model
